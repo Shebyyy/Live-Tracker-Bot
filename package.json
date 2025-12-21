@@ -1,13 +1,13 @@
 {
-  "name": "dartotsu-live-tracker",
+  "name": "dartotsu-hybrid-tracker",
   "version": "1.0.0",
-  "description": "Lightweight Discord bot to track Dartotsu live users",
+  "description": "Hybrid tracker for Dartotsu - Discord RPC + Heartbeat system",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js"
   },
-  "keywords": ["discord", "bot", "tracker"],
+  "keywords": ["discord", "bot", "tracker", "heartbeat"],
   "author": "Dartotsu",
   "license": "MIT",
   "dependencies": {
