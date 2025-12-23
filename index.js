@@ -13,7 +13,9 @@ const client = new Client({
 const app = express();
 const PORT = process.env.PORT || 3000;
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
+
 const DARTOTSU_APP_ID = '1163925779692912771';
+const DARTOTSU_EMOJI_ID = '1305525420938100787'; // dart emoji
 
 // Middleware
 app.use(express.json());
@@ -25,52 +27,69 @@ app.use((req, res, next) => {
 });
 
 // State Management
-const activeUsers = new Map(); // Heartbeat tracking: { userId: { lastSeen, username } }
-let discordWatchingCount = 0; // Users with "watching" RPC
-let discordBrowsingCount = 0; // Users with "browsing" RPC
+const activeUsers = new Map();
+let discordWatchingCount = 0;
+let discordBrowsingCount = 0;
 let lastDiscordUpdate = Date.now();
 
-// Configuration
-const ACTIVE_THRESHOLD = 120000; // 2 minutes
-const CLEANUP_INTERVAL = 60000; // 1 minute
-const DISCORD_UPDATE_INTERVAL = 30000; // 30 seconds
+// Config
+const ACTIVE_THRESHOLD = 120000; 
+const CLEANUP_INTERVAL = 60000; 
+const DISCORD_UPDATE_INTERVAL = 30000; 
 
-// ============= HEARTBEAT SYSTEM =============
-
+// ========= HEARTBEAT =========
 function getHeartbeatCount() {
   const now = Date.now();
   let count = 0;
-  
-  activeUsers.forEach((user) => {
-    if (now - user.lastSeen < ACTIVE_THRESHOLD) {
-      count++;
-    }
+
+  activeUsers.forEach(user => {
+    if (now - user.lastSeen < ACTIVE_THRESHOLD) count++;
   });
-  
+
   return count;
 }
 
 function cleanupInactiveUsers() {
   const now = Date.now();
   const toDelete = [];
-  
-  activeUsers.forEach((user, userId) => {
-    if (now - user.lastSeen > ACTIVE_THRESHOLD * 2) {
-      toDelete.push(userId);
-    }
+
+  activeUsers.forEach((user, id) => {
+    if (now - user.lastSeen > ACTIVE_THRESHOLD * 2)
+      toDelete.push(id);
   });
-  
-  toDelete.forEach(userId => activeUsers.delete(userId));
-  
-  if (toDelete.length > 0) {
-    console.log(`[${new Date().toISOString()}] Cleaned up ${toDelete.length} inactive users`);
-  }
+
+  toDelete.forEach(id => activeUsers.delete(id));
+
+  if (toDelete.length > 0)
+    console.log(`[${new Date().toISOString()}] Cleaned ${toDelete.length} stale users`);
 }
 
 setInterval(cleanupInactiveUsers, CLEANUP_INTERVAL);
 
-// ============= DISCORD RPC TRACKING =============
+// ========= DARTOTSUS VS DANTOTSU FILTER =========
+function isDartotsuActivity(activity) {
+  if (!activity) return false;
+  if (activity.applicationId !== DARTOTSU_APP_ID) return false;
 
+  const assets = activity.assets || {};
+
+  const smallText =
+    assets.smallText ||
+    assets.small_text ||
+    '';
+
+  const smallImage =
+    assets.smallImage ||
+    assets.small_image ||
+    '';
+
+  return (
+    smallText === 'Dartotsu' ||
+    smallImage.includes(DARTOTSU_EMOJI_ID)
+  );
+}
+
+// ========= DISCORD RPC TRACKING =========
 function updateDiscordCount() {
   try {
     const guilds = client.guilds.cache;
@@ -80,20 +99,17 @@ function updateDiscordCount() {
     guilds.forEach(guild => {
       guild.members.cache.forEach(member => {
         const activities = member.presence?.activities || [];
-        
+
         activities.forEach(activity => {
-          if (activity.applicationId === DARTOTSU_APP_ID) {
-            const state = activity.state || '';
-            const details = activity.details || '';
-            
-            // Check if watching/reading (has episode/chapter info)
-            if (state.includes('Episode:') || state.includes('Chapter:')) {
-              uniqueWatching.add(member.id);
-            } 
-            // Otherwise browsing
-            else if (details.includes('Browsing') || activity.name === 'Dartotsu') {
-              uniqueBrowsing.add(member.id);
-            }
+          if (!isDartotsuActivity(activity)) return;
+
+          const state = activity.state || '';
+          const details = activity.details || '';
+
+          if (state.includes('Episode:') || state.includes('Chapter:')) {
+            uniqueWatching.add(member.id);
+          } else if (details.includes('Browsing') || activity.name === 'Dartotsu') {
+            uniqueBrowsing.add(member.id);
           }
         });
       });
@@ -102,55 +118,47 @@ function updateDiscordCount() {
     discordWatchingCount = uniqueWatching.size;
     discordBrowsingCount = uniqueBrowsing.size;
     lastDiscordUpdate = Date.now();
-    
-    console.log(`[${new Date().toISOString()}] Discord: ${discordWatchingCount} watching, ${discordBrowsingCount} browsing`);
-  } catch (error) {
-    console.error('Error updating Discord count:', error);
+
+    console.log(
+      `[${new Date().toISOString()}] Discord: ${discordWatchingCount} watching, ${discordBrowsingCount} browsing`
+    );
+  } catch (err) {
+    console.error('Error updating Discord count:', err);
   }
 }
 
-// ============= DISCORD BOT EVENTS =============
-
+// ========= DISCORD EVENTS =========
 client.once('ready', () => {
-  console.log(`✅ Discord bot logged in as ${client.user.tag}`);
+  console.log(`✅ Logged in as ${client.user.tag}`);
   console.log(`📊 Monitoring ${client.guilds.cache.size} servers`);
-  
+
   updateDiscordCount();
   setInterval(updateDiscordCount, DISCORD_UPDATE_INTERVAL);
 });
 
-client.on('presenceUpdate', (oldPresence, newPresence) => {
-  const hadDartotsu = oldPresence?.activities?.some(
-    activity => activity.applicationId === DARTOTSU_APP_ID
-  );
-  const hasDartotsu = newPresence?.activities?.some(
-    activity => activity.applicationId === DARTOTSU_APP_ID
-  );
+client.on('presenceUpdate', (oldP, newP) => {
+  const had = oldP?.activities?.some(isDartotsuActivity);
+  const has = newP?.activities?.some(isDartotsuActivity);
 
-  if (hadDartotsu !== hasDartotsu) {
-    updateDiscordCount();
-  }
+  if (had !== has) updateDiscordCount();
 });
 
-// ============= API ENDPOINTS =============
-
-// Heartbeat endpoint
+// ========= API =========
 app.post('/api/heartbeat', (req, res) => {
   const { userId, username } = req.body;
-  
-  if (!userId) {
+
+  if (!userId)
     return res.status(400).json({ error: 'userId required' });
-  }
-  
+
   activeUsers.set(userId, {
     lastSeen: Date.now(),
     username: username || 'Anonymous'
   });
-  
+
   const heartbeatCount = getHeartbeatCount();
   const totalDiscord = discordWatchingCount + discordBrowsingCount;
-  
-  res.json({ 
+
+  res.json({
     success: true,
     totalActive: heartbeatCount,
     watching: discordWatchingCount,
@@ -158,21 +166,19 @@ app.post('/api/heartbeat', (req, res) => {
   });
 });
 
-// Get live counts (all metrics)
 app.get('/api/live-count', (req, res) => {
   const heartbeatCount = getHeartbeatCount();
   const totalDiscord = discordWatchingCount + discordBrowsingCount;
-  
+
   res.json({
-    total: heartbeatCount,           // Total app users (heartbeat)
-    watching: discordWatchingCount,  // Users watching/reading (Discord RPC)
-    browsing: totalDiscord,          // Total Discord users (browsing + watching)
+    total: heartbeatCount,
+    watching: discordWatchingCount,
+    browsing: totalDiscord,
     timestamp: Date.now(),
-    lastDiscordUpdate: lastDiscordUpdate
+    lastDiscordUpdate
   });
 });
 
-// Backward compatible - returns total
 app.get('/api/live-count/total', (req, res) => {
   res.json({
     count: getHeartbeatCount(),
@@ -180,7 +186,6 @@ app.get('/api/live-count/total', (req, res) => {
   });
 });
 
-// Get only watching count
 app.get('/api/live-count/watching', (req, res) => {
   res.json({
     count: discordWatchingCount,
@@ -188,7 +193,6 @@ app.get('/api/live-count/watching', (req, res) => {
   });
 });
 
-// Health check
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
@@ -206,20 +210,19 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Debug endpoint
 app.get('/api/debug/stats', (req, res) => {
   const now = Date.now();
   const heartbeatUsers = [];
-  
-  activeUsers.forEach((user, userId) => {
+
+  activeUsers.forEach((user, id) => {
     heartbeatUsers.push({
-      userId: userId.substring(0, 12) + '...',
+      userId: id.substring(0, 12) + '...',
       username: user.username,
       lastSeen: new Date(user.lastSeen).toISOString(),
-      isActive: (now - user.lastSeen) < ACTIVE_THRESHOLD
+      isActive: now - user.lastSeen < ACTIVE_THRESHOLD
     });
   });
-  
+
   res.json({
     heartbeat: {
       totalTracked: activeUsers.size,
@@ -235,26 +238,21 @@ app.get('/api/debug/stats', (req, res) => {
   });
 });
 
-// ============= START SERVICES =============
-
-// Start Express server
+// ========= START =========
 app.listen(PORT, () => {
   console.log(`🚀 Hybrid tracker running on port ${PORT}`);
-  console.log(`📊 Heartbeat threshold: ${ACTIVE_THRESHOLD/1000}s`);
+  console.log(`📊 Heartbeat threshold: ${ACTIVE_THRESHOLD / 1000}s`);
   console.log(`🎮 Discord tracking: Watching + Browsing`);
 });
 
-// Start Discord bot
 if (DISCORD_TOKEN) {
   client.login(DISCORD_TOKEN);
 } else {
-  console.warn('⚠️  No DISCORD_TOKEN provided - Discord tracking disabled');
-  console.log('💡 Heartbeat tracking will still work!');
+  console.warn('⚠️ No DISCORD_TOKEN — Discord tracking disabled');
 }
 
-// Graceful shutdown
 process.on('SIGINT', () => {
-  console.log('\n⏹️  Shutting down gracefully...');
+  console.log('\n⏹️ Shutting down...');
   client.destroy();
   process.exit(0);
 });
